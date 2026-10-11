@@ -408,37 +408,150 @@ function drawWheel() {
 }
 
 /* ---------- Sound (Web Audio, created only after a tap) ---------- */
+/* One shared AudioContext, created or resumed only from a user gesture. Every effect checks
+   state.settings.sound, so the existing Sound toggle controls all of them. */
+const SFX_MASTER_VOLUME = 0.8; /* overall level, 0 to 1 */
+const SFX_MAX_VOICES = 24;     /* hard cap on sounds playing at once */
 let audioCtx = null;
+let masterGain = null;
+let noiseBuffer = null;
 let lastTickAt = 0;
+let sfxSerial = 0;             /* bumped by result sounds so a button click stays quiet when one plays */
+const sfxLast = { click: 0, add: 0, error: 0, win: 0 };
+const activeVoices = new Set(); /* { src, nodes, group } for every sound still playing */
+
 function unlockAudio() {
   if (!state.settings.sound) return;
   try {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
-    if (!audioCtx) audioCtx = new AC();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (!audioCtx) {
+      audioCtx = new AC();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = SFX_MASTER_VOLUME;
+      masterGain.connect(audioCtx.destination);
+    }
+    if (audioCtx.state !== 'running') {
+      const p = audioCtx.resume();
+      if (p && p.catch) p.catch(() => { /* needs a user gesture; the next tap retries */ });
+      return p;
+    }
   } catch (e) { /* sound is optional */ }
 }
-function beep(freq, dur, type, vol, delay = 0) {
-  if (!audioCtx || !state.settings.sound) return;
+/* Sounds play only when sound is on and the context is really running, so nothing queues up
+   while the browser still has audio locked. */
+function soundReady() { return !!(state.settings.sound && audioCtx && masterGain && audioCtx.state === 'running'); }
+function trackVoice(src, nodes, group) {
+  const voice = { src, nodes, group };
+  activeVoices.add(voice);
+  src.onended = () => {
+    activeVoices.delete(voice);
+    nodes.forEach((n) => { try { n.disconnect(); } catch (e) { /* already gone */ } });
+  };
+}
+/* Silences and releases playing sounds; with a group name, only that group. */
+function stopSounds(group) {
+  activeVoices.forEach((v) => {
+    if (group && v.group !== group) return;
+    activeVoices.delete(v);
+    try { v.src.onended = null; v.src.stop(); } catch (e) { /* not started or already stopped */ }
+    v.nodes.forEach((n) => { try { n.disconnect(); } catch (e) { /* already gone */ } });
+  });
+}
+function stopSpinSound() { stopSounds('tick'); lastTickAt = 0; }
+function stopAllSounds() {
+  stopSounds();
+  lastTickAt = 0;
+  if (audioCtx && audioCtx.state === 'running') {
+    const p = audioCtx.suspend(); /* also stops all audio work while sound is off */
+    if (p && p.catch) p.catch(() => { /* not essential */ });
+  }
+}
+function beep(freq, dur, type, vol, delay = 0, group = 'ui', endFreq = 0) {
+  if (!soundReady() || activeVoices.size >= SFX_MAX_VOICES) return;
   try {
     const t = audioCtx.currentTime + delay;
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
-    osc.type = type; osc.frequency.value = freq;
-    gain.gain.setValueAtTime(vol, t);
+    osc.type = type; osc.frequency.setValueAtTime(freq, t);
+    if (endFreq) osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(vol, t + 0.005); /* soft attack avoids clicks */
     gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.connect(gain); gain.connect(masterGain);
     osc.start(t); osc.stop(t + dur + 0.02);
+    trackVoice(osc, [osc, gain], group);
   } catch (e) { /* sound is optional */ }
 }
-function playTick() {
-  const now = performance.now();
-  if (now - lastTickAt < 35) return;
-  lastTickAt = now;
-  beep(1100, 0.03, 'square', 0.04);
+function getNoiseBuffer() { /* built once and reused by every tick */
+  if (!noiseBuffer) {
+    const len = Math.floor(audioCtx.sampleRate * 0.04);
+    noiseBuffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  }
+  return noiseBuffer;
 }
-function playWin() { [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => beep(f, 0.28, 'triangle', 0.12, i * 0.12)); }
+/* Spin tick: a sharp flapper click plus a soft wooden tock. It is called once each time a
+   segment passes the pointer, so ticks slow down with the wheel, and it never plays more than
+   about 25 per second however fast the wheel moves. */
+function playTick() {
+  if (!soundReady() || activeVoices.size >= SFX_MAX_VOICES) return;
+  const now = performance.now();
+  const gap = lastTickAt ? now - lastTickAt : 0;
+  if (lastTickAt && gap < 40) return;
+  lastTickAt = now;
+  const slow = clamp(gap / 400, 0, 1); /* 0 = fast wheel, 1 = nearly stopped: lower and fuller */
+  try {
+    const t = audioCtx.currentTime;
+    const src = audioCtx.createBufferSource();
+    src.buffer = getNoiseBuffer();
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'bandpass'; filter.frequency.value = 3400 - slow * 1200; filter.Q.value = 2.5;
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(0.3 + slow * 0.15, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.022);
+    src.connect(filter); filter.connect(gain); gain.connect(masterGain);
+    src.start(t); src.stop(t + 0.03);
+    trackVoice(src, [src, filter, gain], 'tick');
+    beep(900 - slow * 380, 0.04, 'triangle', 0.07 + slow * 0.03, 0, 'tick');
+  } catch (e) { /* sound is optional */ }
+}
+/* Winner chime: three rising notes (C, E, G), about 0.7 seconds in all. */
+function playWin() {
+  sfxSerial++;
+  const now = performance.now();
+  if (now - sfxLast.win < 400) return;
+  sfxLast.win = now;
+  beep(523.25, 0.28, 'triangle', 0.12, 0, 'win');
+  beep(659.25, 0.28, 'triangle', 0.12, 0.13, 'win');
+  beep(783.99, 0.45, 'triangle', 0.12, 0.26, 'win');
+}
+/* Very short, quiet button click. */
+function playClick() {
+  const now = performance.now();
+  if (now - sfxLast.click < 40) return;
+  sfxLast.click = now;
+  beep(1800, 0.03, 'sine', 0.06, 0, 'ui', 900);
+}
+/* Subtle two-note confirmation when an option is added. */
+function playAdd() {
+  sfxSerial++;
+  const now = performance.now();
+  if (now - sfxLast.add < 120) return;
+  sfxLast.add = now;
+  beep(660, 0.09, 'sine', 0.07, 0, 'ui');
+  beep(990, 0.12, 'sine', 0.07, 0.07, 'ui');
+}
+/* Gentle two-note falling tone for invalid input or errors. */
+function playError() {
+  sfxSerial++;
+  const now = performance.now();
+  if (now - sfxLast.error < 250) return;
+  sfxLast.error = now;
+  beep(300, 0.14, 'sine', 0.1, 0, 'ui');
+  beep(240, 0.2, 'sine', 0.1, 0.12, 'ui');
+}
 
 /* ---------- Confetti ---------- */
 let confettiRaf = 0;
@@ -490,6 +603,7 @@ function updateSpinControls() {
 /* Locks every editing control while the wheel moves, then restores them. */
 function setSpinning(on) {
   state.spinning = on;
+  if (!on) stopSpinSound(); /* the spin sound can never outlive the spin */
   els.wheelStage.classList.toggle('is-spinning', on);
   document.querySelectorAll('.panels button, .panels input, .panels textarea, #spin-again-btn').forEach((el) => { el.disabled = on; });
   updateUndoButtons();
@@ -518,7 +632,7 @@ function addHistoryEntry(label) {
    and the announced result is then read back from the final wheel position. */
 function startSpin() {
   if (state.spinning) return;
-  if (state.options.length < 2) { toast('Add at least 2 options to spin.'); return; }
+  if (state.options.length < 2) { toastError('Add at least 2 options to spin.'); return; }
   unlockAudio();
   const segs = getSegments();
   const planned = pickWinnerIndex();
@@ -536,7 +650,7 @@ function animateSpin(target, duration, planned) {
   const from = state.rotation;
   const t0 = performance.now();
   let lastIdx = indexAtPointer(from);
-  const frame = (now) => {
+  const step = (now) => {
     const t = clamp((now - t0) / duration, 0, 1);
     state.rotation = from + (target - from) * (1 - Math.pow(1 - t, 4));
     drawWheel();
@@ -545,10 +659,14 @@ function animateSpin(target, duration, planned) {
     if (t < 1) requestAnimationFrame(frame);
     else finishSpin(target, planned);
   };
+  const frame = (now) => {
+    try { step(now); } catch (err) { stopSpinSound(); playError(); throw err; }
+  };
   requestAnimationFrame(frame);
 }
 async function finishSpin(target, planned) {
   try {
+    stopSpinSound();
     state.rotation = mod(target, TAU);
     drawWheel();
     const index = indexAtPointer(state.rotation);
@@ -568,6 +686,9 @@ async function finishSpin(target, planned) {
         toast('"' + winner.label + '" removed. Use Undo to bring it back.');
       }
     }
+  } catch (err) {
+    playError();
+    throw err;
   } finally {
     setSpinning(false);
   }
@@ -588,6 +709,9 @@ function toast(message) {
   while (els.toastRegion.children.length > 3) els.toastRegion.firstElementChild.remove();
   setTimeout(() => { el.classList.add('is-leaving'); setTimeout(() => el.remove(), 300); }, 3200);
 }
+
+/* An error message with its gentle warning tone. */
+function toastError(message) { playError(); toast(message); }
 
 /* ---------- Dialog (replaces confirm() and prompt()) ---------- */
 let dialogResolve = null;
@@ -626,6 +750,7 @@ function bindDialog() {
     if (!value) {
       els.dialogError.textContent = 'Enter a name.';
       els.dialogError.hidden = false;
+      playError();
       els.dialogInput.setAttribute('aria-invalid', 'true');
       els.dialogInput.focus();
       return;
@@ -649,7 +774,7 @@ function downloadFile(filename, text, type) {
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
     toast('Download started: ' + filename);
-  } catch (e) { toast('Could not create the download in this browser.'); }
+  } catch (e) { toastError('Could not create the download in this browser.'); }
 }
 async function copyText(text) {
   try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; } } catch (e) { /* try the fallback */ }
@@ -665,10 +790,10 @@ async function copyText(text) {
 function readFileText(file, maxBytes) {
   return new Promise((resolve) => {
     if (!file) { resolve(null); return; }
-    if (file.size > maxBytes) { toast('That file is too large.'); resolve(null); return; }
+    if (file.size > maxBytes) { toastError('That file is too large.'); resolve(null); return; }
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => { toast('Could not read that file.'); resolve(null); };
+    reader.onerror = () => { toastError('Could not read that file.'); resolve(null); };
     reader.readAsText(file);
   });
 }
@@ -696,7 +821,7 @@ function syncNameUI() {
 }
 function bindSettings() {
   els.themeBtn.addEventListener('click', () => { state.settings.theme = state.settings.theme === 'dark' ? 'light' : 'dark'; applyTheme(); saveSoon(); });
-  els.soundToggle.addEventListener('change', () => { state.settings.sound = els.soundToggle.checked; if (state.settings.sound) { unlockAudio(); playTick(); } saveSoon(); });
+  els.soundToggle.addEventListener('change', () => { state.settings.sound = els.soundToggle.checked; if (state.settings.sound) Promise.resolve(unlockAudio()).then(playTick); else stopAllSounds(); saveSoon(); });
   els.confettiToggle.addEventListener('change', () => { state.settings.confetti = els.confettiToggle.checked; saveSoon(); });
   els.eliminationToggle.addEventListener('change', () => { state.settings.elimination = els.eliminationToggle.checked; saveSoon(); });
   els.reducedMotionToggle.addEventListener('change', () => { state.settings.reducedMotion = els.reducedMotionToggle.checked; applyReducedMotion(); saveSoon(); });
@@ -712,7 +837,7 @@ function bindSettings() {
   if (!document.fullscreenEnabled) els.fullscreenBtn.hidden = true;
   els.fullscreenBtn.addEventListener('click', () => {
     const job = fsOn() ? document.exitFullscreen() : document.documentElement.requestFullscreen();
-    Promise.resolve(job).catch(() => toast('Fullscreen is not available here.'));
+    Promise.resolve(job).catch(() => toastError('Fullscreen is not available here.'));
   });
   document.addEventListener('fullscreenchange', () => { els.fullscreenBtn.setAttribute('aria-pressed', String(fsOn())); invalidateWheel(); });
 
@@ -728,6 +853,29 @@ function bindSettings() {
 let installEvent = null;
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; if (els.installBtn) els.installBtn.hidden = false; });
 window.addEventListener('appinstalled', () => { installEvent = null; if (els.installBtn) els.installBtn.hidden = true; });
+
+/* ---------- Button click sounds ---------- */
+/* One delegated listener for the whole page, so a click can never sound twice. The click is
+   skipped for disabled buttons, and when the click already produced its own result sound
+   (option added, error, winner). */
+const CLICK_SOUND_SELECTOR = ['#spin-btn', '#spin-again-btn', '#add-option-btn', '#undo-btn', '#redo-btn', '#sort-btn',
+  '#shuffle-btn', '#clear-btn', '#copy-btn', '#export-btn', '#import-append-btn', '#import-replace-btn', '#preset-save-btn',
+  '#save-wheel-btn', '#export-json-btn', '#import-json-btn', '#theme-btn', '#fullscreen-btn', '#install-btn',
+  '#clear-history-btn', '#dialog-confirm', '#dialog-cancel', '#builtin-presets button', '.load-preset', '.rename-preset',
+  '.delete-preset', '.load-wheel', '.rename-wheel', '.export-wheel', '.delete-wheel'].join(',');
+function bindSoundEffects() {
+  /* Mobile browsers keep audio locked until a tap, so unlock or resume it on the first gesture. */
+  document.addEventListener('touchend', () => { if (state.settings.sound) unlockAudio(); }, { passive: true });
+  document.addEventListener('click', (e) => {
+    if (!state.settings.sound) return;
+    unlockAudio();
+    const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+    if (!btn || !btn.matches(CLICK_SOUND_SELECTOR) || btn.disabled || btn.getAttribute('aria-disabled') === 'true') return;
+    const serial = sfxSerial;
+    /* Wait until the button's own handlers (and a form submit) have run, then click only if quiet. */
+    setTimeout(() => { if (sfxSerial === serial && state.settings.sound) playClick(); }, 0);
+  }, true);
+}
 
 /* ---------- Palettes ---------- */
 function renderPalettes() {
@@ -852,7 +1000,7 @@ function onOptionChange(e) { /* finished edit: validate, then record one undo st
   if (!opt) return;
   if (t.classList.contains('option-label')) {
     const v = cleanLabel(t.value);
-    if (!v) { t.value = opt.label; toast('An option cannot be empty.'); return; }
+    if (!v) { t.value = opt.label; toastError('An option cannot be empty.'); return; }
     t.value = v; opt.label = v; labelRow(row, opt);
     commitChange(); afterOptionsChange({ list: false, keepWinner: true });
   } else if (t.classList.contains('option-color')) {
@@ -914,6 +1062,7 @@ function onDragEnd(e, cancelled) {
 
 /* ---------- Adding, bulk tools and import/export of options ---------- */
 function showOptionError(message) {
+  playError();
   els.optionError.textContent = message;
   els.optionError.hidden = false;
   els.newOptionInput.setAttribute('aria-invalid', 'true');
@@ -932,21 +1081,23 @@ function addOption() {
   afterOptionsChange();
   els.newOptionInput.value = '';
   els.newOptionInput.focus();
+  playAdd();
 }
 function optionsAsText() { return state.options.map((o) => o.label).join('\n'); }
 function parseLines(text) { return String(text).split(/\r?\n/).map((l) => cleanLabel(l)).filter(Boolean); }
 function importLines(replace) {
   const lines = parseLines(els.importText.value);
-  if (!lines.length) { toast('Type or paste at least one option, one per line.'); els.importText.focus(); return; }
+  if (!lines.length) { toastError('Type or paste at least one option, one per line.'); els.importText.focus(); return; }
   const next = replace ? [] : state.options.slice();
   const room = LIMITS.options - next.length;
-  if (room <= 0) { toast('You already have the maximum of ' + LIMITS.options + ' options.'); return; }
+  if (room <= 0) { toastError('You already have the maximum of ' + LIMITS.options + ' options.'); return; }
   const take = lines.slice(0, room);
   take.forEach((label) => next.push(makeOption(label, paletteColor(next.length), 1)));
   state.options = next;
   commitChange();
   afterOptionsChange();
   els.importText.value = '';
+  playAdd();
   toast((replace ? 'Replaced with ' : 'Added ') + take.length + (take.length === 1 ? ' option.' : ' options.') +
     (take.length < lines.length ? ' The rest were skipped (limit ' + LIMITS.options + ').' : ''));
 }
@@ -965,27 +1116,28 @@ function bindOptionTools() {
   els.undoBtn.addEventListener('click', undo);
   els.redoBtn.addEventListener('click', redo);
   els.sortBtn.addEventListener('click', () => {
-    if (state.options.length < 2) { toast('Add at least 2 options to sort.'); return; }
+    if (state.options.length < 2) { toastError('Add at least 2 options to sort.'); return; }
     state.options.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }));
     commitChange(); afterOptionsChange();
   });
   els.shuffleBtn.addEventListener('click', () => {
-    if (state.options.length < 2) { toast('Add at least 2 options to shuffle.'); return; }
+    if (state.options.length < 2) { toastError('Add at least 2 options to shuffle.'); return; }
     shuffleInPlace(state.options);
     commitChange(); afterOptionsChange();
   });
   els.copyBtn.addEventListener('click', async () => {
-    if (!state.options.length) { toast('There are no options to copy.'); return; }
+    if (!state.options.length) { toastError('There are no options to copy.'); return; }
     const ok = await copyText(optionsAsText());
+    if (!ok) playError();
     toast(ok ? 'Copied ' + state.options.length + (state.options.length === 1 ? ' option.' : ' options.') : 'Could not copy. Try Export .txt instead.');
   });
   els.exportBtn.addEventListener('click', () => {
-    if (!state.options.length) { toast('There are no options to export.'); return; }
+    if (!state.options.length) { toastError('There are no options to export.'); return; }
     downloadFile(fileSlug(state.wheelName) + '.txt', optionsAsText() + '\n', 'text/plain');
   });
   els.clearBtn.addEventListener('click', async () => {
     const n = state.options.length;
-    if (!n) { toast('There are no options to remove.'); return; }
+    if (!n) { toastError('There are no options to remove.'); return; }
     if (!(await askConfirm('Remove all options?', 'This removes all ' + n + ' options. Undo can bring them back.', 'Remove all'))) return;
     state.options = [];
     commitChange(); afterOptionsChange();
@@ -1105,26 +1257,27 @@ function bindPresets() {
   els.presetForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = cleanLabel(els.presetNameInput.value, LIMITS.name);
-    if (!name) { toast('Enter a name for the preset.'); els.presetNameInput.focus(); return; }
-    if (!state.options.length) { toast('Add some options before saving a preset.'); return; }
+    if (!name) { toastError('Enter a name for the preset.'); els.presetNameInput.focus(); return; }
+    if (!state.options.length) { toastError('Add some options before saving a preset.'); return; }
     const result = await storeNamed('presets', name, LIMITS.presets);
     if (result === true) { els.presetNameInput.value = ''; toast('Preset "' + name + '" saved.'); }
-    else if (typeof result === 'string') toast(result);
+    else if (typeof result === 'string') toastError(result);
   });
 }
 
 /* ---------- Saved wheels ---------- */
 function showSaveError(message) {
+  if (message) playError();
   els.saveError.textContent = message;
   els.saveError.hidden = !message;
   if (message) els.wheelNameInput.setAttribute('aria-invalid', 'true'); else els.wheelNameInput.removeAttribute('aria-invalid');
 }
 function importWheelText(text) {
-  if (text.length > 500000) { toast('That file is too large.'); return; }
+  if (text.length > 500000) { toastError('That file is too large.'); return; }
   let data;
-  try { data = JSON.parse(text); } catch (e) { toast('That is not valid JSON.'); return; }
+  try { data = JSON.parse(text); } catch (e) { toastError('That is not valid JSON.'); return; }
   const w = sanitizeWheel(data);
-  if (!w) { toast('That is not a SpinMaster wheel. It needs an options list.'); return; }
+  if (!w) { toastError('That is not a SpinMaster wheel. It needs an options list.'); return; }
   applyWheelData(w);
   commitChange();
   afterWheelLoaded();
@@ -1155,12 +1308,12 @@ function bindSavedWheels() {
     '.delete-wheel': (id) => removeNamed('saved', id)
   });
   els.exportJsonBtn.addEventListener('click', () => {
-    if (!state.options.length) { toast('There are no options to export.'); return; }
+    if (!state.options.length) { toastError('There are no options to export.'); return; }
     downloadFile(fileSlug(state.wheelName) + '.json', JSON.stringify(wheelToJSON(), null, 2), 'application/json');
   });
   els.importJsonBtn.addEventListener('click', () => {
     const text = els.importJsonText.value.trim();
-    if (!text) { toast('Paste exported JSON first.'); els.importJsonText.focus(); return; }
+    if (!text) { toastError('Paste exported JSON first.'); els.importJsonText.focus(); return; }
     importWheelText(text);
   });
   els.importJsonFile.addEventListener('change', async () => {
@@ -1219,6 +1372,7 @@ function initApp() {
   syncSettingsUI();
   bindDialog();
   bindSettings();
+  bindSoundEffects();
   bindOptionTools();
   bindPresets();
   bindSavedWheels();
