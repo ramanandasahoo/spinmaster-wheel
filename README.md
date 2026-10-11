@@ -30,6 +30,3 @@ Open the live demo in Chrome on Android and use the browser menu to install Spin
 - JavaScript
 - GitHub Pages
 
-## 📄 License
-
-Add your chosen license here if your project has one.
