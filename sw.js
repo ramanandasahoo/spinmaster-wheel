@@ -1,4 +1,4 @@
-const CACHE_NAME = "spinmaster-v1";
+const CACHE_NAME = "spinmaster-v2";
 
 const APP_FILES = [
   "./",
