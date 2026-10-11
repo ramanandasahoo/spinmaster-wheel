@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>SpinMaster – Random Spin Wheel</title>
+  <meta name="description" content="SpinMaster is a free random spin wheel. Add your own options, weight the odds, save wheels and spin offline.">
+  <meta name="theme-color" content="#e4e7ec" id="theme-color">
+  <meta name="color-scheme" content="light dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="SpinMaster">
+
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" href="./icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+  <link rel="stylesheet" href="./style.css">
+  <script src="./script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to the wheel</a>
+
+  <noscript>
+    <p class="noscript-message">SpinMaster needs JavaScript to run. Please turn it on in your browser settings.</p>
+  </noscript>
+
+  <!-- 1. Header -->
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand__badge" aria-hidden="true"></span>
+      <div class="brand__text">
+        <h1 class="brand__name">SpinMaster</h1>
+        <p class="brand__tagline">Let the wheel decide</p>
+      </div>
+    </div>
+
+    <div class="header-controls" role="group" aria-label="Display controls">
+      <button type="button" id="theme-btn" class="btn btn--icon" aria-pressed="false" aria-label="Dark mode">
+        <span class="btn__glyph" aria-hidden="true"></span>
+        <span class="btn__text">Dark</span>
+      </button>
+      <button type="button" id="fullscreen-btn" class="btn btn--icon" aria-pressed="false" aria-label="Fullscreen">
+        <span class="btn__glyph" aria-hidden="true"></span>
+        <span class="btn__text">Full</span>
+      </button>
+      <button type="button" id="install-btn" class="btn btn--icon" hidden>
+        <span class="btn__glyph" aria-hidden="true"></span>
+        <span class="btn__text">Install</span>
+      </button>
+    </div>
+  </header>
+
+  <main id="main" class="app-main">
+
+    <!-- 2–4. Wheel, Spin button, Winner -->
+    <section class="stage" aria-labelledby="wheel-heading">
+      <h2 id="wheel-heading" class="visually-hidden">Spin wheel</h2>
+      <p id="wheel-name-display" class="stage__name">Untitled wheel</p>
+
+      <div id="wheel-stage" class="wheel-stage">
+        <div class="wheel-bezel">
+          <div class="wheel-well">
+            <canvas id="wheel-canvas" role="img" aria-label="Spin wheel" aria-describedby="wheel-description"></canvas>
+          </div>
+        </div>
+        <div class="pointer" aria-hidden="true">
+          <span class="pointer__pin"></span>
+        </div>
+        <canvas id="confetti-canvas" class="confetti" aria-hidden="true"></canvas>
+      </div>
+      <p id="wheel-description" class="visually-hidden">The wheel has no options yet.</p>
+
+      <div class="spin-area">
+        <button type="button" id="spin-btn" class="spin-btn" aria-describedby="spin-hint">
+          <span class="spin-btn__rim">
+            <span class="spin-btn__cap">
+              <span class="spin-btn__label">Spin</span>
+            </span>
+          </span>
+        </button>
+        <p id="spin-hint" class="spin-hint">Add at least 2 options to spin.</p>
+      </div>
+
+      <section id="winner-section" class="winner" aria-labelledby="winner-heading">
+        <h2 id="winner-heading" class="winner__title">Winner</h2>
+        <div id="winner-card" class="winner__card" role="status" aria-live="polite" aria-atomic="true">
+          <p id="winner-text" class="winner__text">Spin the wheel to pick a winner.</p>
+        </div>
+        <button type="button" id="spin-again-btn" class="btn btn--primary" hidden>Spin again</button>
+      </section>
+    </section>
+
+    <!-- Secondary controls -->
+    <div class="panels">
+
+      <!-- 5. Option editor -->
+      <details class="panel" id="panel-options" open>
+        <summary class="panel__summary"><h2 class="panel__title">Options</h2></summary>
+        <div class="panel__body">
+
+          <form id="add-form" class="add-form" novalidate>
+            <label for="new-option-input" class="field__label">New option</label>
+            <div class="add-form__row">
+              <input type="text" id="new-option-input" class="field" maxlength="60" autocomplete="off" enterkeyhint="done" placeholder="Type an option">
+              <button type="submit" id="add-option-btn" class="btn btn--primary">Add</button>
+            </div>
+            <p id="option-error" class="field__error" role="alert" hidden></p>
+          </form>
+
+          <div class="toolbar" role="group" aria-label="Edit all options">
+            <button type="button" id="undo-btn" class="btn btn--small" disabled>Undo</button>
+            <button type="button" id="redo-btn" class="btn btn--small" disabled>Redo</button>
+            <button type="button" id="sort-btn" class="btn btn--small">Sort A–Z</button>
+            <button type="button" id="shuffle-btn" class="btn btn--small">Shuffle</button>
+            <button type="button" id="copy-btn" class="btn btn--small">Copy list</button>
+            <button type="button" id="export-btn" class="btn btn--small">Export .txt</button>
+            <button type="button" id="clear-btn" class="btn btn--small btn--danger">Remove all</button>
+          </div>
+
+          <div class="weighted">
+            <label class="switch" for="weighted-toggle">
+              <input type="checkbox" id="weighted-toggle" class="switch__input" role="switch" aria-describedby="weighted-help">
+              <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+              <span class="switch__text">Weighted mode</span>
+            </label>
+            <p id="weighted-help" class="hint">Off: every option has the same chance. On: a higher weight gives an option a bigger slice of the wheel and a higher chance of winning.</p>
+          </div>
+
+          <p id="option-count" class="hint" aria-live="polite">0 options</p>
+          <p id="options-empty" class="empty" hidden>No options yet. Add one above or pick a preset.</p>
+          <ul id="option-list" class="option-list" aria-label="Wheel options"></ul>
+
+          <details class="subpanel">
+            <summary class="subpanel__summary">Import many options</summary>
+            <div class="subpanel__body">
+              <label for="import-text" class="field__label">One option per line</label>
+              <textarea id="import-text" class="field field--area" rows="5" spellcheck="false"></textarea>
+              <div class="button-row">
+                <button type="button" id="import-append-btn" class="btn btn--small">Add to wheel</button>
+                <button type="button" id="import-replace-btn" class="btn btn--small">Replace options</button>
+                <label for="import-file" class="btn btn--small">Load .txt file</label>
+                <input type="file" id="import-file" class="visually-hidden" accept=".txt,text/plain">
+              </div>
+            </div>
+          </details>
+        </div>
+      </details>
+
+      <!-- 6. Presets -->
+      <details class="panel" id="panel-presets">
+        <summary class="panel__summary"><h2 class="panel__title">Presets</h2></summary>
+        <div class="panel__body">
+          <h3 class="panel__subtitle">Built-in</h3>
+          <div id="builtin-presets" class="preset-grid" role="group" aria-label="Built-in presets"></div>
+
+          <h3 class="panel__subtitle">My presets</h3>
+          <p id="custom-presets-empty" class="empty">You have no presets yet. Save your current options below.</p>
+          <ul id="custom-presets-list" class="item-list" aria-label="My presets"></ul>
+
+          <form id="preset-form" class="add-form" novalidate>
+            <label for="preset-name-input" class="field__label">Preset name</label>
+            <div class="add-form__row">
+              <input type="text" id="preset-name-input" class="field" maxlength="40" autocomplete="off" placeholder="Name this preset">
+              <button type="submit" id="preset-save-btn" class="btn btn--primary">Save preset</button>
+            </div>
+          </form>
+        </div>
+      </details>
+
+      <!-- 7. Customization -->
+      <details class="panel" id="panel-customize">
+        <summary class="panel__summary"><h2 class="panel__title">Customize</h2></summary>
+        <div class="panel__body">
+
+          <fieldset class="fieldset">
+            <legend class="field__label">Color palette</legend>
+            <div id="palette-options" class="palette-options"></div>
+            <p class="hint">Choosing a palette recolors every segment. You can still change single segments in Options.</p>
+          </fieldset>
+
+          <div class="range">
+            <label for="duration-range" class="field__label">Spin duration</label>
+            <div class="range__row">
+              <input type="range" id="duration-range" class="range__input" min="2" max="15" step="1" value="6">
+              <output id="duration-output" for="duration-range" class="range__output">6 s</output>
+            </div>
+          </div>
+
+          <div class="switch-list">
+            <label class="switch" for="sound-toggle">
+              <input type="checkbox" id="sound-toggle" class="switch__input" role="switch">
+              <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+              <span class="switch__text">Sound effects</span>
+            </label>
+            <label class="switch" for="confetti-toggle">
+              <input type="checkbox" id="confetti-toggle" class="switch__input" role="switch">
+              <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+              <span class="switch__text">Confetti</span>
+            </label>
+            <label class="switch" for="elimination-toggle">
+              <input type="checkbox" id="elimination-toggle" class="switch__input" role="switch" aria-describedby="elimination-help">
+              <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+              <span class="switch__text">Elimination mode</span>
+            </label>
+            <p id="elimination-help" class="hint">The winner is removed from the wheel after each spin. Use Undo to bring it back.</p>
+            <label class="switch" for="reduced-motion-toggle">
+              <input type="checkbox" id="reduced-motion-toggle" class="switch__input" role="switch" aria-describedby="reduced-motion-help">
+              <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+              <span class="switch__text">Reduced motion</span>
+            </label>
+            <p id="reduced-motion-help" class="hint">Shortens the spin and turns off confetti. Also turns on if your device asks for less motion.</p>
+          </div>
+        </div>
+      </details>
+
+      <!-- 8. Saved wheels -->
+      <details class="panel" id="panel-saved">
+        <summary class="panel__summary"><h2 class="panel__title">Saved wheels</h2></summary>
+        <div class="panel__body">
+
+          <form id="save-wheel-form" class="add-form" novalidate>
+            <label for="wheel-name-input" class="field__label">Wheel name</label>
+            <div class="add-form__row">
+              <input type="text" id="wheel-name-input" class="field" maxlength="40" autocomplete="off" placeholder="Untitled wheel">
+              <button type="submit" id="save-wheel-btn" class="btn btn--primary">Save wheel</button>
+            </div>
+            <p id="save-error" class="field__error" role="alert" hidden></p>
+          </form>
+
+          <p id="saved-empty" class="empty">No saved wheels yet.</p>
+          <ul id="saved-list" class="item-list" aria-label="Saved wheels"></ul>
+
+          <details class="subpanel">
+            <summary class="subpanel__summary">Export or import JSON</summary>
+            <div class="subpanel__body">
+              <button type="button" id="export-json-btn" class="btn btn--small">Export current wheel (.json)</button>
+              <label for="import-json-text" class="field__label">Paste exported JSON</label>
+              <textarea id="import-json-text" class="field field--area" rows="4" spellcheck="false"></textarea>
+              <div class="button-row">
+                <button type="button" id="import-json-btn" class="btn btn--small">Import pasted JSON</button>
+                <label for="import-json-file" class="btn btn--small">Load .json file</label>
+                <input type="file" id="import-json-file" class="visually-hidden" accept=".json,application/json">
+              </div>
+              <p class="hint">Imported files are checked before use and are never run as code.</p>
+            </div>
+          </details>
+        </div>
+      </details>
+
+      <!-- 9. Spin history -->
+      <details class="panel" id="panel-history">
+        <summary class="panel__summary"><h2 class="panel__title">Spin history</h2></summary>
+        <div class="panel__body">
+          <p id="history-empty" class="empty">No spins yet.</p>
+          <ol id="history-list" class="history-list" aria-label="Spin history, newest first"></ol>
+          <button type="button" id="clear-history-btn" class="btn btn--small btn--danger">Clear history</button>
+        </div>
+      </details>
+
+      <!-- 10. Help -->
+      <details class="panel" id="panel-help">
+        <summary class="panel__summary"><h2 class="panel__title">Help</h2></summary>
+        <div class="panel__body help">
+          <h3 class="panel__subtitle">Spinning</h3>
+          <p>Press Spin. The wheel stops on the winner under the pointer at the top. With the Spin button selected, Enter or Space also works.</p>
+
+          <h3 class="panel__subtitle">Editing options</h3>
+          <p>Add options in the Options panel. Change a label or color directly in its row, and use the arrow buttons or the drag handle to reorder. Undo and Redo cover recent edits.</p>
+
+          <h3 class="panel__subtitle">Weighted mode</h3>
+          <p>Turn it on to give each option a weight from 1 to 100. A higher weight makes the segment larger and more likely to win.</p>
+
+          <h3 class="panel__subtitle">Saving</h3>
+          <p>Everything is saved on this device in your browser. Saved wheels can be exported as JSON to move them to another device.</p>
+
+          <h3 class="panel__subtitle">Installing</h3>
+          <p>Use your browser menu and choose Install app or Add to Home screen. After the first visit SpinMaster also works offline.</p>
+        </div>
+      </details>
+    </div>
+  </main>
+
+  <!-- 11. Footer -->
+  <footer class="app-footer">
+    <p>SpinMaster runs entirely in your browser. Your wheels never leave this device.</p>
+  </footer>
+
+  <!-- Shared dialog for rename, confirm and delete -->
+  <dialog id="app-dialog" class="dialog" aria-labelledby="dialog-title" aria-describedby="dialog-message">
+    <form id="dialog-form" method="dialog" class="dialog__card" novalidate>
+      <h2 id="dialog-title" class="dialog__title">Confirm</h2>
+      <p id="dialog-message" class="dialog__message"></p>
+      <div id="dialog-input-wrap" class="dialog__input" hidden>
+        <label for="dialog-input" id="dialog-input-label" class="field__label">Name</label>
+        <input type="text" id="dialog-input" class="field" maxlength="40" autocomplete="off">
+        <p id="dialog-error" class="field__error" role="alert" hidden></p>
+      </div>
+      <div class="button-row dialog__actions">
+        <button type="button" id="dialog-cancel" class="btn">Cancel</button>
+        <button type="submit" id="dialog-confirm" class="btn btn--primary">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Short messages such as "Copied" or "Saved" -->
+  <div id="toast-region" class="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Row templates cloned by script.js -->
+  <template id="option-item-template">
+    <li class="option-item">
+      <button type="button" class="icon-btn drag-handle" aria-label="Drag to reorder"><span aria-hidden="true">⋮⋮</span></button>
+      <input type="color" class="option-color" aria-label="Segment color">
+      <input type="text" class="field option-label" maxlength="60" autocomplete="off" aria-label="Option label">
+      <input type="number" class="field option-weight" min="1" max="100" step="1" value="1" inputmode="numeric" aria-label="Weight">
+      <div class="option-actions">
+        <button type="button" class="icon-btn move-up" aria-label="Move up"><span aria-hidden="true">↑</span></button>
+        <button type="button" class="icon-btn move-down" aria-label="Move down"><span aria-hidden="true">↓</span></button>
+        <button type="button" class="icon-btn delete-option" aria-label="Delete option"><span aria-hidden="true">✕</span></button>
+      </div>
+    </li>
+  </template>
+
+  <template id="custom-preset-template">
+    <li class="item-row">
+      <button type="button" class="btn btn--small item-row__main load-preset"></button>
+      <button type="button" class="btn btn--small rename-preset">Rename</button>
+      <button type="button" class="btn btn--small btn--danger delete-preset">Delete</button>
+    </li>
+  </template>
+
+  <template id="saved-item-template">
+    <li class="item-row">
+      <button type="button" class="btn btn--small item-row__main load-wheel"></button>
+      <button type="button" class="btn btn--small rename-wheel">Rename</button>
+      <button type="button" class="btn btn--small export-wheel">Export</button>
+      <button type="button" class="btn btn--small btn--danger delete-wheel">Delete</button>
+    </li>
+  </template>
+
+  <template id="history-item-template">
+    <li class="history-item">
+      <strong class="history-item__winner"></strong>
+      <span class="history-item__meta">
+        <span class="history-item__wheel"></span>
+        <time class="history-item__time"></time>
+      </span>
+    </li>
+  </template>
+</body>
+</html>
